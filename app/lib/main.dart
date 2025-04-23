@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'textstyles.dart';
+import 'ble_controls.dart';
 
 void main() {
   runApp(const MyApp());
@@ -38,6 +40,15 @@ class _MyHomePageState extends State<MyHomePage> {
   int _seconds = 0;
   int _day = 0;
   bool _skipButtonsEnabled = false;
+
+  String _timeToString() {
+    String result;
+    result = _hours.toString() + ":" + _minutes.toString() + ":" + _seconds.toString() + ":" + weekDays[_day];
+    return result;
+  }
+
+//! TODO: Refactor increments and decrements to only use one function
+//        with positive/negative "amount" value ( eg. changeHours(amount) ).
 
   void _incrementHours({int count = 1}) {
     setState(() {
@@ -101,20 +112,60 @@ class _MyHomePageState extends State<MyHomePage> {
 
   void _syncDataWithPhone() {
     setState(() {
-
+      DateTime time = DateTime.now();
+      _day = time.weekday - 1; // weekday values start at 1, end at 7.
+      _hours = time.hour;
+      _minutes = time.minute;
+      _seconds = time.second;
     });
   }
 
-  void _syncDataWithClock() {
-    setState(() {
-
-    });
+  void _connectClock() async {
+    try {
+      bool success = await connectToClock();
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Connected to clock!"))
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Could not find device."))
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Connection failed: ${e.toString()}"))
+      );
+    }
   }
 
-  void _sendDataToClock() {
-    setState(() {
+  void _syncDataWithClock() async {
+    try {
+      Map<String, int> timeData = await getTimeFromClock();
+      setState(() {
+        _hours = timeData['hours']!;
+        _minutes = timeData['minutes']!;
+        _seconds = timeData['seconds']!;
+        _day = timeData['day']!;
+      });
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Failed to sync: ${e.toString()}"))
+      );
+    }
+  }
 
-    });
+  void _sendDataToClock() async {
+    try {
+      await sendTimeToClock(_hours, _minutes, _seconds, _day);
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Time sent to clock!"))
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Failed to send: ${e.toString().substring(11)}"))
+      );
+    }
   }
 
   void _toggleSkipButtons() {
@@ -302,7 +353,7 @@ class _MyHomePageState extends State<MyHomePage> {
           ),
           SizedBox(width: 8),
           FloatingActionButton(
-            onPressed: _syncDataWithClock,
+            onPressed: _connectClock,
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.center,

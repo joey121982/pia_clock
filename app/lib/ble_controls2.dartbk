@@ -1,0 +1,115 @@
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'dart:async';
+
+const String serviceUuid = "1a39d1af-53ab-447b-9368-6f36ba2a09b6";
+const String characteristicRxUuid = "1a39d1af-53ab-447b-9368-6f36ba2a09b7";
+const String characteristicTxUuid = "1a39d1af-53ab-447b-9368-6f36ba2a09b8";
+
+BluetoothDevice? _connectedDevice;
+BluetoothCharacteristic? _rxCharacteristic;
+BluetoothCharacteristic? _txCharacteristic;
+
+Future<bool> connectToClock() async {
+  Map<Permission, PermissionStatus> statuses = await [
+    Permission.bluetooth,
+    Permission.bluetoothConnect,
+    Permission.bluetoothScan,
+    Permission.locationWhenInUse,
+  ].request();
+
+  if (statuses[Permission.bluetooth] != PermissionStatus.granted ||
+      statuses[Permission.bluetoothConnect] != PermissionStatus.granted ||
+      statuses[Permission.bluetoothScan] != PermissionStatus.granted) {
+    return false;
+  }
+
+  // Start BLE scan
+  await FlutterBluePlus.startScan(timeout: const Duration(seconds: 15));
+  BluetoothDevice? targetDevice;
+  StreamSubscription<List<ScanResult>>? scanSubscription;
+  final completer = Completer<void>();
+  scanSubscription = FlutterBluePlus.scanResults.listen((results) {
+    print("STARTING SCAN!");
+    for (ScanResult result in results) {
+      print(result.device.platformName);
+      if (result.device.platformName == 'CLOCK825') {
+        targetDevice = result.device;
+        FlutterBluePlus.stopScan();
+        scanSubscription?.cancel();
+        completer.complete();
+        break;
+      }
+    }
+  });
+  // Wait for device discovery or timeout
+  await completer.future.timeout(const Duration(seconds: 15), onTimeout: () {
+    scanSubscription?.cancel();
+    throw Exception('Device not found');
+  });
+  if (targetDevice == null) return false;
+  // Connect to device
+  await targetDevice!.connect(autoConnect: false);
+  _connectedDevice = targetDevice;
+  // Discover services
+  List<BluetoothService> services = await _connectedDevice!.discoverServices();
+  for (BluetoothService service in services) {
+    if (service.uuid.toString() == serviceUuid) {
+      for (BluetoothCharacteristic characteristic in service.characteristics) {
+        if (characteristic.uuid.toString() == characteristicRxUuid) {
+          _rxCharacteristic = characteristic;
+        } else if (characteristic.uuid.toString() == characteristicTxUuid) {
+          _txCharacteristic = characteristic;
+        }
+      }
+    }
+  }
+  if (_rxCharacteristic == null || _txCharacteristic == null) {
+    throw Exception('Required characteristics not found');
+  }
+  // Set notification for RX characteristic
+  await _rxCharacteristic!.setNotifyValue(true);
+  _rxCharacteristic!.value.listen((value) {
+    // Handle incoming data
+    print('Received data: $value');
+  });
+  return true;
+}
+
+void disconnectFromClock() {
+  // Disconnect from the device if connected
+  if (_connectedDevice != null) {
+    _connectedDevice!.disconnect();
+    _connectedDevice = null;
+  }
+}
+
+Future<void> sendTimeToClock(int hour, int minute, int second, int day) async {
+  if (_rxCharacteristic != null) {
+    String timeString = '$hour:$minute:$second:$day';
+    await _rxCharacteristic!.write(timeString.codeUnits);
+    print('Sent time: $timeString');
+  } else {
+    throw Exception('RX characteristic not found');
+  }
+}
+
+Future<Map<String, int>> getTimeFromClock() async {
+  if (_txCharacteristic != null) {
+    List<int> value = await _txCharacteristic!.read();
+    print('Received time: $value');
+    String timeString = String.fromCharCodes(value);
+    List<String> parts = timeString.split(':');
+    if (parts.length != 4) {
+      throw Exception('Invalid time format: $timeString');
+    }
+    return {
+      'hours': int.parse(parts[0]),
+      'minutes': int.parse(parts[1]),
+      'seconds': int.parse(parts[2]),
+      'day': int.parse(parts[3]),
+    };
+  } else {
+    throw Exception('TX characteristic not found');
+  }
+}
